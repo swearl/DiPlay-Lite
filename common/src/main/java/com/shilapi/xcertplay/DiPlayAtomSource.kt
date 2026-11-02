@@ -6,13 +6,14 @@ import java.io.StringReader
 
 /**
  * Strictly parse published release entries from GitHub's official Atom feed. No API token needed.
- * Non-semver / preview tags are ignored.
+ * Tags must look like "v{versionName}-{versionCode}" (e.g. v0.3.12-29); anything else is ignored.
  */
 internal object DiPlayAtomSource {
-    private const val REPO = "https://github.com/programmerguohuajing/DiPlay-Legacy-Android"
-    data class Entry(val tag: String, val notes: String)
+    private const val REPO = "https://github.com/swearl/DiPlay-Lite"
+    data class Entry(val tag: String, val versionName: String, val versionCode: Int,
+                     val notes: String)
 
-    fun newest(xml: String, installedVersion: String): Entry? {
+    fun newest(xml: String, installedVersionCode: Int): Entry? {
         val parser = Xml.newPullParser()
         parser.setInput(StringReader(xml))
         var entry = false
@@ -44,10 +45,13 @@ internal object DiPlayAtomSource {
                 XmlPullParser.END_TAG -> if (parser.name == "entry") {
                     entry = false
                     val tag = id.substringAfterLast('/')
+                    val parsed = DiPlayUpdateClient.parseTag(tag)
                     if (id.startsWith("tag:github.com,2008:Repository/") &&
                         href == "$REPO/releases/tag/$tag" &&
-                        DiPlayUpdateClient.newerVersion(tag, installedVersion)
-                    ) return Entry(tag, notes.ifBlank { title }.take(6000))
+                        parsed != null &&
+                        parsed.second > installedVersionCode
+                    ) return Entry(tag, parsed.first, parsed.second,
+                        notes.ifBlank { title }.take(6000))
                 }
             }
             parser.next()

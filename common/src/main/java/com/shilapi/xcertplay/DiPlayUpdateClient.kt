@@ -18,12 +18,13 @@ import okhttp3.OkUrlFactory
 
 /** GitHub-only updates with a domestic HTTPS mirror for release assets. */
 internal object DiPlayUpdateClient {
-    private const val REPO = "programmerguohuajing/DiPlay-Legacy-Android"
+    private const val REPO = "swearl/DiPlay-Lite"
     private const val LATEST_URL = "https://api.github.com/repos/$REPO/releases/latest"
     private const val MAX_METADATA = 512 * 1024
     private const val MAX_DIGEST_FILE = 2 * 1024
     private const val MAX_APK_BYTES = 120L * 1024 * 1024
-    private val tagPattern = Regex("^v(\\d+)\\.(\\d+)\\.(\\d+)$")
+    // Release tags look like "v0.3.12-29": versionName-versionCode.
+    private val tagPattern = Regex("^v(\\d+\\.\\d+\\.\\d+)-(\\d+)$")
     private val digestPattern = Regex("^[a-fA-F0-9]{64}$")
 
     data class Release(
@@ -33,32 +34,37 @@ internal object DiPlayUpdateClient {
         val apkUrl: String,
         val checksumUrl: String,
         val declaredSize: Long,
+        val versionName: String,
+        val versionCode: Int,
     )
 
-    /** Treat malformed, prerelease and non-increasing version labels as non-updates. */
-    fun newerVersion(remote: String, installed: String): Boolean {
-        val remoteParts = tagPattern.matchEntire(remote)?.groupValues?.drop(1)
-            ?.mapNotNull { it.toIntOrNull() } ?: return false
-        val localParts = installed.removePrefix("v").substringBefore('-').split('.')
-            .takeIf { it.size == 3 }?.mapNotNull { it.toIntOrNull() } ?: return false
-        if (localParts.size != 3) return false
-        for (index in 0..2) {
-            if (remoteParts[index] > localParts[index]) return true
-            if (remoteParts[index] < localParts[index]) return false
+    /** The release asset is named DiPlay-Lite-{versionName}-{versionCode}-release.apk. */
+    private fun apkAssetName(versionName: String, versionCode: Int): String =
+        "DiPlay-Lite-$versionName-$versionCode-release.apk"
+
+    /** Parse a "v{versionName}-{versionCode}" tag; null when the format is unexpected. */
+    fun parseTag(tag: String): Pair<String, Int>? =
+        tagPattern.matchEntire(tag)?.let { match ->
+            val code = match.groupValues[2].toIntOrNull()
+            if (code != null) match.groupValues[1] to code else null
         }
-        return false
+
+    /** Updates are decided by versionCode alone; unparseable tags are never updates. */
+    fun newerVersion(remoteTag: String, installedVersionCode: Int): Boolean {
+        val code = parseTag(remoteTag)?.second ?: return false
+        return code > installedVersionCode
     }
 
     /** Discover releases only from the canonical GitHub repository. */
-    fun latest(installed: String): Release? = latestFromGitHub(installed)
+    fun latest(installedVersionCode: Int): Release? = latestFromGitHub(installedVersionCode)
 
     /** Unauthenticated GitHub API calls may be rate-limited on shared mobile networks. */
-    private fun latestFromGitHub(installed: String): Release? = try {
-        parseLatest(readText(LATEST_URL, MAX_METADATA), installed)
+    private fun latestFromGitHub(installedVersionCode: Int): Release? = try {
+        parseLatest(readText(LATEST_URL, MAX_METADATA), installedVersionCode)
     } catch (apiFailure: Exception) {
         // GitHub's official Atom feed has no REST API quota.
         try {
-            latestFromAtom(installed)
+            latestFromAtom(installedVersionCode)
         } catch (feedFailure: Exception) {
             feedFailure.addSuppressed(apiFailure)
             throw feedFailure
@@ -66,11 +72,11 @@ internal object DiPlayUpdateClient {
     }
 
     /** Atom fallback when anonymous REST API quota is exhausted. */
-    private fun latestFromAtom(installed: String): Release? {
+    private fun latestFromAtom(installedVersionCode: Int): Release? {
         val feedUrl = "https://github.com/$REPO/releases.atom"
-        val entry = DiPlayAtomSource.newest(readText(feedUrl, MAX_METADATA), installed)
+        val entry = DiPlayAtomSource.newest(readText(feedUrl, MAX_METADATA), installedVersionCode)
             ?: return null
-        val apk = "DiPlay-${entry.tag}-legacy-release.apk"
+        val apk = apkAssetName(entry.versionName, entry.versionCode)
         val url = "https://github.com/$REPO/releases/download/${entry.tag}/$apk"
         val head = connect(url, method = "HEAD")
         val size = try {
@@ -80,17 +86,19 @@ internal object DiPlayUpdateClient {
             head.disconnect()
         }
         if (size <= 0 || size > MAX_APK_BYTES) throw IOException("Invalid release APK size")
-        val release = Release(entry.tag, entry.notes, apk, url, "$url.sha256", size)
+        val release = Release(entry.tag, entry.notes, apk, url, "$url.sha256", size,
+            entry.versionName, entry.versionCode)
         checksum(release) // Verify the expected digest file is actually published.
         return release
     }
 
-    internal fun parseLatest(json: String, installed: String): Release? {
+    internal fun parseLatest(json: String, installedVersionCode: Int): Release? {
         val root = JSONObject(json)
         if (root.optBoolean("draft") || root.optBoolean("prerelease")) return null
         val tag = root.optString("tag_name")
-        if (!newerVersion(tag, installed)) return null
-        val apk = "DiPlay-$tag-legacy-release.apk"
+        val (versionName, versionCode) = parseTag(tag) ?: return null
+        if (versionCode <= installedVersionCode) return null
+        val apk = apkAssetName(versionName, versionCode)
         val prefix = "https://github.com/$REPO/releases/download/$tag/"
         val assets = root.getJSONArray("assets")
         var apkUrl: String? = null
@@ -112,7 +120,8 @@ internal object DiPlayUpdateClient {
         if (apkUrl == null || shaUrl == null || bytes <= 0 || bytes > MAX_APK_BYTES) {
             throw IOException("Release $tag does not contain a valid APK and SHA-256 asset")
         }
-        return Release(tag, root.optString("body").take(6000), apk, apkUrl, shaUrl, bytes)
+        return Release(tag, root.optString("body").take(6000), apk, apkUrl, shaUrl, bytes,
+            versionName, versionCode)
     }
 
     /**
@@ -343,7 +352,7 @@ internal object DiPlayUpdateClient {
         connection.requestMethod = method
         connection.connectTimeout = 12_000
         connection.readTimeout = 20_000
-        connection.setRequestProperty("User-Agent", "DiPlay-Legacy-Android-Updater")
+        connection.setRequestProperty("User-Agent", "DiPlay-Lite-Updater")
         connection.setRequestProperty("Accept", "application/vnd.github+json")
     }
 

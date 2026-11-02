@@ -55,9 +55,8 @@ internal class DiPlayUpdater(private val activity: DiPlayActivity) {
         if (manual) toast(R.string.update_checking)
         worker.execute {
             try {
-                val installed = activity.packageManager.getPackageInfo(activity.packageName, 0).versionName
-                    ?: throw IOException("Installed version unavailable")
-                val release = DiPlayUpdateClient.latest(installed)
+                val installed = activity.packageManager.getPackageInfo(activity.packageName, 0)
+                val release = DiPlayUpdateClient.latest(installed.versionCode)
                 if (!manual) prefs.edit().putLong("last_success", System.currentTimeMillis()).apply()
                 onUi {
                     if (release == null) {
@@ -159,9 +158,9 @@ internal class DiPlayUpdater(private val activity: DiPlayActivity) {
         val candidate = pm.getPackageArchiveInfo(apk.absolutePath, PackageManager.GET_SIGNATURES)
             ?: throw IOException("Downloaded file is not a readable APK")
         if (candidate.packageName != installed.packageName ||
-            !DiPlayUpdateClient.newerVersion(release.tag, installed.versionName ?: "") ||
-            candidate.versionName != release.tag.removePrefix("v") ||
-            candidate.versionCode <= installed.versionCode
+            candidate.versionCode <= installed.versionCode ||
+            candidate.versionCode != release.versionCode ||
+            candidate.versionName != release.versionName
         ) throw IOException("APK package or version does not match the release")
         val installedCerts = installed.signatures?.map { it.toCharsString() }?.sorted()
         val candidateCerts = candidate.signatures?.map { it.toCharsString() }?.sorted()
@@ -251,7 +250,7 @@ internal class DiPlayUpdater(private val activity: DiPlayActivity) {
             DiPlayUpdateClient.isObsoleteSslv3Failure(error) ->
                 activity.getString(R.string.update_tls_unavailable)
             isTimeout ->
-                activity.getString(R.string.update_network_timeout, "https://github.com/programmerguohuajing/DiPlay-Legacy-Android/releases")
+                activity.getString(R.string.update_network_timeout, "https://github.com/swearl/DiPlay-Lite/releases")
             else -> error.message ?: error.javaClass.simpleName
         }
         DiPlayUpdateDialogs.confirm(
