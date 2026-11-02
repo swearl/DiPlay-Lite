@@ -1,0 +1,85 @@
+plugins {
+    id 'com.android.library'
+}
+
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.JVM_1_8
+    }
+}
+android {
+    namespace = 'com.shilapi.xcertplay.shared'
+    compileSdk = 37
+
+    defaultConfig {
+        minSdk = 19
+
+        ndk {
+            // Workspace AGENTS.md rule: so files are built for armeabi-v7a only.
+            abiFilters 'armeabi-v7a'
+        }
+
+        externalNativeBuild {
+            ndkBuild {
+                arguments 'APP_PLATFORM=android-19'
+                if (org.gradle.internal.os.OperatingSystem.current().isWindows()) {
+                    arguments 'HOST_OS=windows'
+                }
+            }
+        }
+    }
+    // NDK r25c is the last supported toolchain that still targets Android 4.4 (API 19).
+    ndkVersion = '25.2.9519653'
+    externalNativeBuild {
+        ndkBuild {
+            path = file('src/main/jni/Android.mk')
+        }
+    }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_1_8
+        targetCompatibility = JavaVersion.VERSION_1_8
+    }
+    lint {
+        abortOnError false
+        // lintVital crashes on JBR 17 while analyzing vendor stubs (List.removeLast is a JDK 21 API).
+        checkReleaseBuilds false
+        disable 'UnsafeIntentLaunch'
+    }
+}
+dependencies {
+    compileOnly files('libs/autosdk.jar')
+    // jdk15on 1.70 / jmdns 3.5.1: old-Java-target releases. Newer bcprov/jmdns lines
+    // pull in more Java 8 APIs (java.util.function, Map.getOrDefault) that break on API 19.
+    // Note: 3.5.1 does contain a few stream()/function lambda call sites (verified on-device OK).
+    implementation 'org.bouncycastle:bcprov-jdk15on:1.70'
+    api 'org.conscrypt:conscrypt-android:2.5.2'
+    implementation 'org.jmdns:jmdns:3.5.1'
+}
+
+// Resolve the pinned software Opus sources before Android Gradle Plugin configures ndk-build.
+// This also covers local Android Studio builds, not only CI.
+def prepareOpusSources = tasks.register('prepareOpusSources', Exec) {
+    workingDir rootProject.projectDir
+    commandLine (System.getProperty('os.name').toLowerCase().contains('windows') ? ['D:/Python/Python313/python.exe', 'scripts/prepare-libopus.py'] : ['python3', 'scripts/prepare-libopus.py'])
+}
+def prepareLwipSources = tasks.register('prepareLwipSources', Exec) {
+    workingDir rootProject.projectDir
+    commandLine (System.getProperty('os.name').toLowerCase().contains('windows') ? ['D:/Python/Python313/python.exe', 'scripts/prepare-lwip.py'] : ['python3', 'scripts/prepare-lwip.py'])
+}
+tasks.configureEach { task ->
+    // AGP 9's lintVital crashes on JBR 17 while analyzing vendor stubs
+    // (List.removeLast is a JDK 21 API); skip it entirely.
+    if (task.name.startsWith('lintVital')) {
+        task.enabled = false
+    }
+    // AGP 9 runs configureNdkBuild* before externalNativeBuild*; on a clean
+    // checkout (CI) the configure step reaches Android.mk before the pinned
+    // sources exist unless it also waits for the prepare tasks.
+    if (task.name.startsWith('generateJsonModel') || task.name.startsWith('externalNativeBuild') ||
+        task.name.startsWith('configureNdkBuild')) {
+        task.dependsOn(prepareOpusSources)
+        task.dependsOn(prepareLwipSources)
+    }
+}

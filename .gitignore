@@ -1,0 +1,16 @@
+*.iml
+.gradle
+/local.properties
+/.idea
+.DS_Store
+build/
+/captures
+.externalNativeBuild
+.cxx
+
+# Pinned libopus dependency retrieved by scripts/prepare-libopus.py
+/shared/src/main/jni/libopus/
+
+# Pinned lwIP dependency retrieved by scripts/prepare-lwip.py
+/shared/src/main/jni/lwip/
+.kotlin
