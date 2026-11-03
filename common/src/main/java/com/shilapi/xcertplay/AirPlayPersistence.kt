@@ -3,6 +3,7 @@ package com.shilapi.xcertplay
 import android.content.Context
 import android.os.Build
 import com.shilapi.xcertplay.airplay.AirPlayDisplaySettings
+import com.shilapi.xcertplay.compat.realSdkInt
 import com.shilapi.xcertplay.airplay.AirPlayPhysicalSizeBasis
 import com.shilapi.xcertplay.airplay.CarPlayDisplayScale
 import com.shilapi.xcertplay.airplay.CarPlayClusterDisplay
@@ -82,6 +83,7 @@ object AirPlayPersistence {
     private const val KEY_CARPLAY_AUTO_DISCONNECT_BT = "carplay_auto_disconnect_bt"
     private const val KEY_TELEPHONY_DOWNLINK_VIA_MUSIC = "telephony_downlink_via_music"
     private const val KEY_ANNOUNCEMENT_DUCK_MEDIA = "announcement_duck_media"
+    private const val KEY_DOCK_BAR_REFRONT = "dock_bar_refront"
     private const val KEY_DEBUG_LOGS_ENABLED = "debug_logs_enabled"
     private const val KEY_MANUFACTURER = "manufacturer"
     private const val KEY_MODEL = "model"
@@ -271,10 +273,14 @@ object AirPlayPersistence {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getBoolean(KEY_AUDIO_FOCUS_AUTO_YIELD, true)
 
-    /** Issue #315: legacy-chip reverse cold start; off by default, takes effect on the next reverse. */
-    fun loadLegacyReverseColdStart(context: Context): Boolean =
-        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
-            .getBoolean(KEY_LEGACY_REVERSE_COLD_START, false)
+    /** Issue #315: legacy-chip reverse cold start; default on for legacy head units, takes effect on the next reverse. */
+    fun loadLegacyReverseColdStart(context: Context): Boolean {
+        val prefs = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
+        if (prefs.contains(KEY_LEGACY_REVERSE_COLD_START)) {
+            return prefs.getBoolean(KEY_LEGACY_REVERSE_COLD_START, false)
+        }
+        return isLegacyReverseHeadUnit()
+    }
 
     fun saveLegacyReverseColdStart(context: Context, enabled: Boolean) {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
@@ -749,6 +755,14 @@ object AirPlayPersistence {
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_ANNOUNCEMENT_DUCK_MEDIA, enabled).apply()
     }
 
+    /** Issue #363: re-front the task to dismiss a launcher dock bar (experimental display). */
+    fun loadDockBarRefront(context: Context): Boolean =
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).getBoolean(KEY_DOCK_BAR_REFRONT, false)
+
+    fun saveDockBarRefront(context: Context, enabled: Boolean) {
+        context.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit().putBoolean(KEY_DOCK_BAR_REFRONT, enabled).apply()
+    }
+
     fun loadHostapdSsid(context: Context): String =
         context.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
             .getString(KEY_HOSTAPD_SSID, null)?.takeIf { it.isNotBlank() } ?: "DiPlay"
@@ -810,6 +824,21 @@ object AirPlayPersistence {
         val manufacturer = Build.MANUFACTURER.lowercase(java.util.Locale.US)
         return hardware.contains("sun8i") || hardware.contains("allwinner") ||
             board.contains("exdroid") || brand.contains("allwinner") || manufacturer.contains("allwinner")
+    }
+
+    /** Issue #315: detect legacy SoCs (MTK 8227L, PF8227, Allwinner, Rockchip, Android 4.x/5.x) prone to reverse video deadlock. */
+    fun isLegacyReverseHeadUnit(): Boolean {
+        if (realSdkInt() <= 19) return true
+        val hardware = Build.HARDWARE.lowercase(java.util.Locale.US)
+        val board = Build.BOARD.lowercase(java.util.Locale.US)
+        val display = Build.DISPLAY.lowercase(java.util.Locale.US)
+        val brand = Build.BRAND.lowercase(java.util.Locale.US)
+        val manufacturer = Build.MANUFACTURER.lowercase(java.util.Locale.US)
+        val product = Build.PRODUCT.lowercase(java.util.Locale.US)
+        val device = Build.DEVICE.lowercase(java.util.Locale.US)
+        val tokens = listOf(hardware, board, display, brand, manufacturer, product, device)
+        fun anyMatches(vararg keys: String) = tokens.any { t -> keys.any { k -> t.contains(k) } }
+        return anyMatches("8227", "mt8227", "ac8227", "pf8227", "xy.android", "yecon", "sun8i", "t3", "rk3066", "rk3188", "px3")
     }
 
     /** Compatibility microphone mode for calls on Allwinner / custom ROM head units; applies at reconnect. */

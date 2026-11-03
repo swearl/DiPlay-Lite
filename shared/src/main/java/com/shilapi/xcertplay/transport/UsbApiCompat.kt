@@ -19,9 +19,12 @@ internal fun queueUsbRequest(request: UsbRequest, buffer: ByteBuffer): Boolean {
 internal fun usbTransferSize(requested: Int): Int = minOf(requested, 16 * 1024)
 
 /**
- * Issue #213: the 5-arg bulkTransfer(UsbEndpoint, ByteArray, Int, Int, Int) overload
+ * Issue #213 & #371: the 5-arg bulkTransfer(UsbEndpoint, ByteArray, Int, Int, Int) overload
  * was added in API 18; on API 17 it throws NoSuchMethodError. Fall back to the 4-arg
  * overload, copying the slice when offset > 0.
+ *
+ * Some head units (e.g. AC8317 / Zebra) fake SDK_INT or lack the 5-arg overload in their
+ * framework build; catch NoSuchMethodError and safely fallback to the 4-arg overload.
  */
 internal fun bulkTransferCompat(
     connection: UsbDeviceConnection,
@@ -30,7 +33,13 @@ internal fun bulkTransferCompat(
     offset: Int,
     count: Int,
     timeout: Int,
-): Int = connection.bulkTransfer(endpoint, data, offset, count, timeout)
+): Int = try {
+    connection.bulkTransfer(endpoint, data, offset, count, timeout)
+} catch (_: NoSuchMethodError) {
+    // 部分车机伪造 SDK_INT 或框架缺失 5 参重载（上游 #371），回退 4 参调用
+    val slice = if (offset == 0 && count == data.size) data else data.copyOfRange(offset, offset + count)
+    connection.bulkTransfer(endpoint, slice, slice.size, timeout)
+}
 
 /** Preserve the full USBMUX/NCM byte stream when old Android truncates large bulk writes. */
 internal fun writeUsbChunks(

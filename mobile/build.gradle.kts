@@ -26,9 +26,9 @@ android {
         applicationId = "tech.touka.diplay.lite"
         minSdk = 19
         targetSdk = 19
-        // versionName follows the upstream mobile module (0.3.12).
+        // versionName follows the upstream mobile module (0.3.15).
         versionCode = commitCount + 1
-        versionName = "0.3.12"
+        versionName = "0.3.15"
         ndk {
             // Workspace AGENTS.md rule: package armeabi-v7a native libs only
             // (also filters jniLibs pulled in by AAR dependencies like conscrypt).

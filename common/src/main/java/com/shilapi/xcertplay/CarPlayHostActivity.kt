@@ -145,6 +145,24 @@ class CarPlayHostActivity : android.app.Activity() {
         )
     }
     private var startupRetryStopped = false
+
+    /**
+     * Releases the automatic-retry stop (issues #359/#275/#305): the wired
+     * failure counters restart and the retry button hides. Only deliberate
+     * or physical events call this — the Retry button, a fresh USB attach
+     * (the replug the stop messages ask for), a transport switch, or a
+     * session actually activating. Status reports and waiting states must
+     * never release it implicitly: issue #359 showed the stop being walked
+     * around because restarts reached the stack without ever consulting
+     * the latch.
+     */
+    private fun clearStartupRetryStop() {
+        startupRetryStopped = false
+        wiredNoTcpFailures = 0
+        wiredUsbBusyFailures = 0
+        wiredUsbStallFailures = 0
+        startupRetryButton?.visibility = View.GONE
+    }
     private var startupRetryButton: View? = null
     private var startupFailureGeneration = -1
     private lateinit var airPlayIdentity: AirPlayIdentity
@@ -404,6 +422,7 @@ class CarPlayHostActivity : android.app.Activity() {
             return@Runnable
         }
         reverseCameraActive = false
+        fallbackVideoView?.visibility = View.VISIBLE
         sink?.refreshPicture(SCREEN_TYPE_MAIN)
         reapplyVideoLayout()
         fallbackVideoView?.invalidate()
@@ -433,6 +452,7 @@ class CarPlayHostActivity : android.app.Activity() {
             return@Runnable
         }
         reverseCameraActive = false
+        fallbackVideoView?.visibility = View.VISIBLE
         sink?.resumeVideoFromReverse(SCREEN_TYPE_MAIN)
         reapplyVideoLayout()
         fallbackVideoView?.invalidate()
@@ -456,6 +476,10 @@ class CarPlayHostActivity : android.app.Activity() {
         legacyReverseActive = true
         appendLog("Display: reverse camera started by broadcast source=$source; legacy cold start: decoder released")
         sink?.suspendVideoForReverse(SCREEN_TYPE_MAIN)
+        // Issue #315: on legacy chips/head units (e.g. PF8227/MTK 8227L), active SurfaceView hardware overlay
+        // collides with the system reverse camera and dynamic trajectory layer in the GPU/hardware composer.
+        // Hide the SurfaceView overlay during reverse so the car camera gets dedicated layer ownership.
+        fallbackVideoView?.visibility = View.INVISIBLE
     }
 
     private fun handleReverseCameraExit(source: String) {
@@ -638,6 +662,9 @@ class CarPlayHostActivity : android.app.Activity() {
     private var carplayAutoDisconnectBt = false
     private var telephonyDownlinkViaMusic = false
     private var announcementDuckMedia = false
+    private var dockBarRefrontEnabled = false
+    private var dockRefrontAttempts = 0
+    private var dockRefrontLastAttemptMs = 0L
     private var awaitingVpnConsent = false
     private var vpnConsentLaunchElapsed = 0L
     private var vpnConsentInstantDenyCount = 0
@@ -955,6 +982,7 @@ class CarPlayHostActivity : android.app.Activity() {
         carplayAutoDisconnectBt = AirPlayPersistence.loadCarplayAutoDisconnectBt(this)
         telephonyDownlinkViaMusic = AirPlayPersistence.loadTelephonyDownlinkViaMusic(this)
         announcementDuckMedia = AirPlayPersistence.loadAnnouncementDuckMedia(this)
+        dockBarRefrontEnabled = AirPlayPersistence.loadDockBarRefront(this)
     }
 
     private fun requestStartupPrerequisites() {
@@ -1106,6 +1134,9 @@ class CarPlayHostActivity : android.app.Activity() {
         super.onNewIntent(intent)
         setIntent(intent)
         if (isIphoneUsbAttachment(intent)) {
+            // A fresh attach is the physical replug the stop messages ask
+            // for (issue #359): the stopped episode is over.
+            clearStartupRetryStop()
             if (wirelessEnabled) {
                 if (menuOpen) cancelSettingsEdits()
                 AirPlayPersistence.saveWirelessEnabled(this, false)
@@ -1202,6 +1233,7 @@ class CarPlayHostActivity : android.app.Activity() {
                     }
                 }
                 if (controller != null) {
+                    clearStartupRetryStop()
                     restartCarPlay("switching to ${if (wirelessEnabled) "wireless" else "USB"}")
                 }
                 requestStartupPrerequisites()
@@ -1592,12 +1624,8 @@ class CarPlayHostActivity : android.app.Activity() {
                 if (!CarPlayBackgroundSession.isOwner(this@CarPlayHostActivity) ||
                     shuttingDown.get() || menuOpen || handshakeResetInProgress) return@setOnClickListener
                 startupRetryBudget.manualRetry()
-                startupRetryStopped = false
                 reconnectAttempts = 0
-                wiredNoTcpFailures = 0
-                wiredUsbBusyFailures = 0
-                wiredUsbStallFailures = 0
-                visibility = View.GONE
+                clearStartupRetryStop()
                 restartCarPlay(getString(R.string.connecting_to_your_iphone))
             }
             startupRetryButton = this
@@ -4228,9 +4256,7 @@ class CarPlayHostActivity : android.app.Activity() {
                     activeAirPlaySession = session
                     CarPlayBackgroundSession.active = true
                     reconnectAttempts = 0
-                    wiredNoTcpFailures = 0
-                    wiredUsbBusyFailures = 0
-                    wiredUsbStallFailures = 0
+                    clearStartupRetryStop()
                     logThemeState(ThemeModeDiagnostics.Source.SESSION_ACTIVE, resources.configuration)
                     syncAirPlayDarkMode(ThemeModeDiagnostics.Source.SESSION_ACTIVE)
                     if (menuOpen) return@runOnUiThread
@@ -4817,6 +4843,65 @@ class CarPlayHostActivity : android.app.Activity() {
         return SystemClock.elapsedRealtime() - surfaceReaddAtMs < 3_000L
     }
 
+    /**
+     * Issue #363 (v0.3.14 retest): the head unit's dock bar can squeeze the
+     * window vertically long after the settle window above — the layout fit
+     * then shrinks the surface proportionally (a 1024x600 canvas fitted into
+     * a 1024x500 window becomes 854x500) and the black borders latch. That
+     * squeeze is not a content size change: the window keeps its width, only
+     * its height is compressed, the fit is height-driven (the fitted bounds
+     * fill the squeezed height and keep the canvas aspect), and the session
+     * canvas itself is unchanged. Recognize it at any age and keep the
+     * established size: the window clips the surface while the bar is up
+     * and the picture is intact when it drops. A genuine reverse entry is
+     * not this — while reversing, the reverse flag is set and the video
+     * view has already yielded the display surface.
+     */
+    /**
+     * Issue #363: the reporter's discriminator proved the dock bar is
+     * dropped by task re-fronting, not by focus gain (focus returns after
+     * every reverse exit and the bar stays). Bounded per squeeze episode
+     * (3 attempts, 5 s apart) so a
+     * launcher that refuses is not fought forever; the episode resets
+     * when full height is restored.
+     *
+     * The start target is the launcher activity with NEW_TASK — the exact
+     * form the reporter's manual test proved. The first implementation
+     * re-fronted this host itself with REORDER_TO_FRONT, which the
+     * v0.3.15 retest showed is a no-op: a singleTask host already at the
+     * top of its own task has nothing to reorder, only onNewIntent fires
+     * and the window layer never moves.
+     */
+    private fun maybeRefrontForDockBar() {
+        if (!dockBarRefrontEnabled) return
+        if (activeAirPlaySession == null || menuOpen || shuttingDown.get() ||
+            handshakeResetInProgress || reverseCameraActive) return
+        val now = SystemClock.elapsedRealtime()
+        if (dockRefrontAttempts >= 3 || now - dockRefrontLastAttemptMs < 5_000L) return
+        dockRefrontAttempts += 1
+        dockRefrontLastAttemptMs = now
+        appendLog("Display: dock squeeze detected; bringing the app task to the front (attempt $dockRefrontAttempts)")
+        runCatching {
+            startActivity(
+                Intent(this, DiPlayActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
+        }.onFailure { appendLog("Display: task re-front failed: ${it.message}") }
+    }
+
+    private fun isDockSqueezedShrink(bounds: CarPlaySurfaceBounds, viewWidth: Int, viewHeight: Int): Boolean {
+        if (reverseCameraActive) return false
+        val baseline = surfaceReaddBounds ?: return false
+        if (bounds.width >= baseline.width || bounds.height >= baseline.height) return false
+        if (viewHeight - bounds.height > 1) return false
+        // The squeezed fit keeps the established aspect (within rounding).
+        // Compare against the baseline, not the current display size: a
+        // display-changed callback can rewrite the latter to the squeezed
+        // size before this layout pass runs, which made a canvas-referenced
+        // comparison fail and let the small size through (v0.3.15 retest).
+        return kotlin.math.abs(bounds.width * baseline.height - bounds.height * baseline.width) <= baseline.height
+    }
+
     private fun updateVideoLayout(viewWidth: Int, viewHeight: Int) {
         val view = videoView ?: return
         if (viewWidth <= 0 || viewHeight <= 0) return
@@ -4842,6 +4927,12 @@ class CarPlayHostActivity : android.app.Activity() {
             // transitional smaller size; fitting to it would setFixedSize the new
             // Surface back down and the settle listener would keep re-asserting
             // the small size, so the loop ended small instead of converging.
+            val readdBounds = surfaceReaddBounds
+            if (dockRefrontAttempts > 0 && readdBounds != null &&
+                bounds.height >= readdBounds.height) {
+                appendLog("Display: full height restored after task re-front (attempts=$dockRefrontAttempts)")
+                dockRefrontAttempts = 0
+            }
             val transitionalShrink = fallbackVideoBounds != bounds && isTransitionalShrinkAfterReadd(bounds)
             if (transitionalShrink) {
                 appendLog(
@@ -4849,7 +4940,16 @@ class CarPlayHostActivity : android.app.Activity() {
                         "after surface re-add; keeping ${surfaceReaddBounds?.width}x${surfaceReaddBounds?.height}",
                 )
             }
-            if (fallbackVideoBounds != bounds && !transitionalShrink) {
+            val dockSqueezedShrink = fallbackVideoBounds != bounds && !transitionalShrink &&
+                isDockSqueezedShrink(bounds, viewWidth, viewHeight)
+            if (dockSqueezedShrink) {
+                appendLog(
+                    "Display: ignored dock-squeezed shrink to ${bounds.width}x${bounds.height}; " +
+                        "keeping ${surfaceReaddBounds?.width}x${surfaceReaddBounds?.height}",
+                )
+                maybeRefrontForDockBar()
+            }
+            if (fallbackVideoBounds != bounds && !transitionalShrink && !dockSqueezedShrink) {
                 val previousBounds = fallbackVideoBounds
                 fallbackVideoBounds = bounds
                 if (previousBounds == null && bounds.width > 0 && bounds.height > 0) {
@@ -5063,6 +5163,7 @@ class CarPlayHostActivity : android.app.Activity() {
             shuttingDown.get() ||
             menuOpen ||
             handshakeResetInProgress ||
+            startupRetryStopped ||
             pendingDisplaySize != null ||
             controller != null
         ) {
@@ -5231,6 +5332,14 @@ class CarPlayHostActivity : android.app.Activity() {
     private fun restartCarPlay(reason: String) {
         if (!CarPlayBackgroundSession.isOwner(this)) return
         if (shuttingDown.get() || menuOpen || handshakeResetInProgress) return
+        // Issue #359: the stop is a hard gate for this connection episode.
+        // Automatic restart paths (display changes, deferred recoveries,
+        // controller callbacks) must not rebuild the stack behind it; only
+        // clearStartupRetryStop() releases it.
+        if (startupRetryStopped) {
+            appendLog("restart suppressed while automatic retry is stopped: $reason")
+            return
+        }
         val size = activeDisplaySize ?: return
         startupRetryBudget.disconnected()
         startupRetryButton?.visibility = View.GONE

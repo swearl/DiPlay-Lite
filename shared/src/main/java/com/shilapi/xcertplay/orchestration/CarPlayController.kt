@@ -2521,6 +2521,7 @@ class CarPlayController(
     private fun beginReenumeration(device: UsbDevice) {
         phase = Phase.REENUMERATION
         reenumerationAttempts += 1
+        reenumeratedThisAttach = true
         val generation = availabilityPollGeneration.incrementAndGet()
         onStatus(CarPlayStatus.SelectingConfiguration)
 
@@ -2625,7 +2626,7 @@ class CarPlayController(
      * detach (handled in onIphoneDetached) clears it again.
      */
     private fun shouldForceReenumerationBeforeReuse(): Boolean =
-        !forcedReenumerationForAttach && runCatching {
+        !forcedReenumerationForAttach && !reenumeratedThisAttach && runCatching {
             appContext.getSharedPreferences(WIRED_SESSION_PREFS, android.content.Context.MODE_PRIVATE)
                 .getBoolean(KEY_WIRED_SESSION_COMPLETED, false)
         }.getOrDefault(false)
@@ -2715,8 +2716,16 @@ class CarPlayController(
     }
 
     private fun onIphoneDetached(device: UsbDevice) {
+        val ncm = wiredNcm
+        val session = wiredUsbSession
+        val ncmInAgo = ncm?.bulkInSuccessAgoMs ?: -1L
+        val ncmOutAgo = ncm?.bulkOutSuccessAgoMs ?: -1L
+        val ncmSummary = ncm?.writeSummary ?: "none"
+        val muxInAgo = session?.readSuccessAgoMs ?: -1L
+        val muxOutAgo = session?.writeSuccessAgoMs ?: -1L
         debugLog(
-            "wired USB detached: vid=0x${device.vendorId.toString(16)} pid=0x${device.productId.toString(16)} dev=${device.deviceName}",
+            "wired USB detached: vid=0x${device.vendorId.toString(16)} pid=0x${device.productId.toString(16)} dev=${device.deviceName} " +
+                "lastMuxIn=${muxInAgo}ms lastMuxOut=${muxOutAgo}ms lastNcmIn=${ncmInAgo}ms lastNcmOut=${ncmOutAgo}ms ncmWrite=[$ncmSummary]",
         )
         if (closed) return
         when (phase) {
@@ -2728,6 +2737,7 @@ class CarPlayController(
                 // A real detach ends the attach episode: the next plug may need its
                 // own forced re-enumeration after a completed session (issue #275).
                 forcedReenumerationForAttach = false
+                reenumeratedThisAttach = false
                 persistWiredSessionCompleted(false)
                 // A replug is a fresh start, not a retry: direct pacing restarts too.
                 lastDirectAttemptStartNanos = 0L
@@ -4097,6 +4107,16 @@ class CarPlayController(
         private const val KEY_WIRED_SESSION_COMPLETED = "wired_session_completed"
         /** Issues #275/#269: the one forced re-enumeration latch for this attach episode. */
         @Volatile private var forcedReenumerationForAttach = false
+
+        /**
+         * Issue #368: any re-enumeration already performed for this attach
+         * (companion-scoped like [forcedReenumerationForAttach], reset on a
+         * real detach). A vendor transition the phone just performed at our
+         * request already replaced its accessory state, so the #275 forced
+         * pass has nothing left to flush and must not stack a second
+         * transition onto the same attach.
+         */
+        @Volatile private var reenumeratedThisAttach = false
         private const val EXECUTOR_CLOSE_TIMEOUT_MILLIS = 2_000L
         /** Issue #281: per-resource bound for teardown closes; a stuck close is abandoned. */
         private const val TEARDOWN_RESOURCE_TIMEOUT_MILLIS = 3_000L
