@@ -3,7 +3,6 @@ package com.shilapi.xcertplay
 import android.content.Context
 import android.os.Build
 import com.shilapi.xcertplay.airplay.AirPlayDisplaySettings
-import com.shilapi.xcertplay.compat.realSdkInt
 import com.shilapi.xcertplay.airplay.AirPlayPhysicalSizeBasis
 import com.shilapi.xcertplay.airplay.CarPlayDisplayScale
 import com.shilapi.xcertplay.airplay.CarPlayClusterDisplay
@@ -826,20 +825,8 @@ object AirPlayPersistence {
             board.contains("exdroid") || brand.contains("allwinner") || manufacturer.contains("allwinner")
     }
 
-    /** Issue #315: detect legacy SoCs (MTK 8227L, PF8227, Allwinner, Rockchip, Android 4.x/5.x) prone to reverse video deadlock. */
-    fun isLegacyReverseHeadUnit(): Boolean {
-        if (realSdkInt() <= 19) return true
-        val hardware = Build.HARDWARE.lowercase(java.util.Locale.US)
-        val board = Build.BOARD.lowercase(java.util.Locale.US)
-        val display = Build.DISPLAY.lowercase(java.util.Locale.US)
-        val brand = Build.BRAND.lowercase(java.util.Locale.US)
-        val manufacturer = Build.MANUFACTURER.lowercase(java.util.Locale.US)
-        val product = Build.PRODUCT.lowercase(java.util.Locale.US)
-        val device = Build.DEVICE.lowercase(java.util.Locale.US)
-        val tokens = listOf(hardware, board, display, brand, manufacturer, product, device)
-        fun anyMatches(vararg keys: String) = tokens.any { t -> keys.any { k -> t.contains(k) } }
-        return anyMatches("8227", "mt8227", "ac8227", "pf8227", "xy.android", "yecon", "sun8i", "t3", "rk3066", "rk3188", "px3")
-    }
+    /** Issue #315: 兼容 Android 4.4 车机（MTK 8227L、全志、Rockchip 等），一律按旧机型处理，避免倒车视频死锁。 */
+    fun isLegacyReverseHeadUnit(): Boolean = true
 
     /** Compatibility microphone mode for calls on Allwinner / custom ROM head units; applies at reconnect. */
     fun loadCallMicCompatibility(context: Context): Boolean {

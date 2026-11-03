@@ -1,14 +1,10 @@
 package com.shilapi.xcertplay.network
 
-import android.Manifest
 import android.content.Context
-import android.content.pm.PackageManager
 import android.net.wifi.WifiManager
 import android.net.wifi.p2p.WifiP2pGroup
 import android.net.wifi.p2p.WifiP2pInfo
 import android.net.wifi.p2p.WifiP2pManager
-import android.os.Build
-import com.shilapi.xcertplay.compat.realSdkInt
 import android.os.HandlerThread
 import android.os.Looper
 import android.os.SystemClock
@@ -203,12 +199,6 @@ internal class LegacyWifiP2pGroupManager(
     }
 
     private fun checkPrerequisites() {
-        if (
-            realSdkInt() >= 23 && appContext.checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            throw IOException("Allow precise Location for DiPlay before using Wi-Fi Direct")
-        }
         val wifi = appContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
         if (wifi?.isWifiEnabled == false) {
             throw IOException("Turn on Wi-Fi in the head unit settings before using Wi-Fi Direct")

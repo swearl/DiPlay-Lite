@@ -71,14 +71,8 @@ internal class SharedUsbDeviceConnection private constructor(
     override fun releaseInterface(usbInterface: android.hardware.usb.UsbInterface): Boolean =
         connection.releaseInterface(usbInterface)
 
-    override fun setInterface(usbInterface: android.hardware.usb.UsbInterface): Boolean =
-        if (com.shilapi.xcertplay.compat.realSdkInt() >= android.os.Build.VERSION_CODES.LOLLIPOP) {
-            try {
-                connection.setInterface(usbInterface)
-            } catch (_: NoSuchMethodError) {
-                false
-            }
-        } else false
+    // UsbDeviceConnection.setInterface 为 API 21+ 方法，api 19 上不存在，直接返回 false
+    override fun setInterface(usbInterface: android.hardware.usb.UsbInterface): Boolean = false
 
     override fun queue(request: UsbRequest, buffer: ByteBuffer): Boolean {
         completions.register(request)

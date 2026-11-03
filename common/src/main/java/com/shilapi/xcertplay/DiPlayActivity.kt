@@ -2929,7 +2929,9 @@ class DiPlayActivity : android.app.Activity() {
     @android.annotation.SuppressLint("MissingPermission")
     private fun choosePhone() {
         val adapter = BluetoothCompat.getAdapter(this)
-        if (adapter == null) {
+        // HSAE 车机蓝牙栈兼容：系统适配器缺失时仍可枚举 HSAE 蓝牙设备，仅当两者都不可用才回退手动输入
+        val hsae = CarPlayBluetoothManager.get(this).hsae
+        if (adapter == null && !hsae.isSupported()) {
             promptManualBluetoothInput()
             return
         }
@@ -2987,6 +2989,26 @@ class DiPlayActivity : android.app.Activity() {
                 result[addr] = DiscoveredBluetoothDevice(addr, name, isConnected = true)
             }
         }
+        }
+
+        // 4. 合并 HSAE 车机蓝牙栈的已连接/已配对设备（系统栈缺失或未列出时兜底）
+        runCatching {
+            val hsae = CarPlayBluetoothManager.get(this).hsae
+            if (hsae.isSupported()) {
+                val hsaeConnected = hsae.getConnectedDevice()
+                if (hsaeConnected != null) {
+                    val addr = hsaeConnected.address.uppercase(java.util.Locale.US)
+                    if (addr.isNotBlank()) {
+                        result[addr] = DiscoveredBluetoothDevice(addr, "${hsaeConnected.name} (HSAE)", isConnected = true)
+                    }
+                }
+                for (dev in hsae.getPairedDevices()) {
+                    val addr = dev.address.uppercase(java.util.Locale.US)
+                    if (addr.isNotBlank() && !result.containsKey(addr)) {
+                        result[addr] = DiscoveredBluetoothDevice(addr, "${dev.name} (HSAE)", dev.isConnected)
+                    }
+                }
+            }
         }
 
         return result.values.sortedWith(
